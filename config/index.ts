@@ -67,6 +67,7 @@ export const config: AppConfig = {
       nodeEnv: getEnvVar('NODE_ENV', false) || 'development',
       baseUrl: getEnvVar('NEXT_PUBLIC_BASE_URL', false) || 'http://localhost:3000',
       whatsappProvider: (getEnvVar('WHATSAPP_PROVIDER', false) || 'twilio') as 'meta' | 'twilio',
+      audioConverterUrl: getEnvVar('AUDIO_CONVERTER_URL', false) || 'http://localhost:3001',
     };
   },
 };

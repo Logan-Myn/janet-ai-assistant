@@ -214,6 +214,7 @@ export interface AppConfig {
     nodeEnv: string;
     baseUrl: string;
     whatsappProvider: 'meta' | 'twilio';
+    audioConverterUrl: string;
   };
 }
 
