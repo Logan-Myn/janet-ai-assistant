@@ -1,8 +1,10 @@
 import { whatsappClient } from '@/lib/whatsapp/client';
 import { twilioWhatsAppClient } from '@/lib/whatsapp/twilio-client';
 import { transcribeAudio } from '@/lib/whisper/transcribe';
-import { claudeClient } from '@/lib/claude/client';
+import { agentManager } from '@/lib/claude/agent-manager';
+import { conversationManager } from '@/lib/utils/conversation-manager';
 import { mem0Client } from '@/lib/mem0/memory';
+import { mcpManager } from '@/lib/mcp/multi-client';
 import { config } from '@/config';
 import type { ProcessedMessage } from '@/types';
 
@@ -95,121 +97,74 @@ export async function processIncomingMessage(
 
 async function handleMessage(message: ProcessedMessage): Promise<string> {
   try {
-    const userContext = await mem0Client.getUserContext(message.userId);
+    // Get Agent instance for this user (creates with context if needed)
+    const agent = await agentManager.getAgent(message.userId);
 
-    const isTaskRelated = await isTaskManagementRequest(message.content);
+    // Get conversation history
+    const history = conversationManager.getHistory(message.userId);
 
-    if (isTaskRelated) {
-      return await handleTaskManagement(message, userContext);
-    } else {
-      return await handleGeneralConversation(message, userContext);
+    // Add user message to history
+    conversationManager.addMessage(message.userId, 'user', message.content);
+
+    console.log(`Processing message for user ${message.userId} (history: ${history.length} messages)`);
+
+    // Use Agent to process message with full conversation context
+    // Agent automatically handles multi-step tool calling
+    // Format conversation history into the prompt
+    let fullPrompt = message.content;
+    if (history.length > 0) {
+      const historyContext = history
+        .map((msg) => `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`)
+        .join('\n');
+      fullPrompt = `Previous conversation:\n${historyContext}\n\nCurrent message: ${message.content}`;
     }
-  } catch (error) {
-    console.error('Error handling message:', error);
-    return "I'm sorry, I encountered an error. Please try again.";
-  }
-}
 
-async function isTaskManagementRequest(content: string): Promise<boolean> {
-  const taskKeywords = [
-    'task',
-    'todo',
-    'remind',
-    'schedule',
-    'project',
-    'due',
-    'complete',
-    'finish',
-    'priority',
-    'urgent',
-    'deadline',
-    'create',
-    'add',
-    'update',
-    'delete',
-    'list',
-    'show',
-    'what',
-  ];
+    const result = await agent.generate({ prompt: fullPrompt });
 
-  const contentLower = content.toLowerCase();
-  return taskKeywords.some((keyword) => contentLower.includes(keyword));
-}
+    // Log tool usage for debugging
+    if (result.steps && result.steps.length > 0) {
+      const toolsUsed = result.steps
+        .flatMap((step: any) => step.toolCalls || [])
+        .map((tc: any) => tc.toolName)
+        .filter(Boolean);
 
-async function handleTaskManagement(
-  message: ProcessedMessage,
-  context: any
-): Promise<string> {
-  try {
-    // Claude will use MCP tools to query tasks and detect conflicts during Extended Thinking
-    const result = await claudeClient.processMessage(
-      message.content,
-      context,
-      [],
-      'high' // Use high thinking budget for task management
-    );
+      if (toolsUsed.length > 0) {
+        console.log(`Agent completed ${result.steps.length} steps using tools:`, toolsUsed.join(', '));
 
-    // Log tool calls for debugging
-    if (result.toolCalls && result.toolCalls.length > 0) {
-      console.log('Claude used these tools:', result.toolCalls.map(tc => tc.tool).join(', '));
-      console.log('Full tool call details:', JSON.stringify(result.toolCalls, null, 2));
+        // Record task creation in Mem0
+        const createTaskCalls = result.steps
+          .flatMap((step: any) => step.toolCalls || [])
+          .filter((tc: any) =>
+            tc.toolName === 'add-tasks' ||
+            tc.toolName === 'add-task' ||
+            tc.toolName?.includes('add') && tc.toolName?.includes('task')
+          );
 
-      // Record any created tasks in memory (check for various tool names)
-      const createTaskCalls = result.toolCalls.filter(tc =>
-        tc.tool === 'createTask' ||
-        tc.tool === 'add-task' ||
-        tc.tool === 'add-tasks' || // Todoist MCP uses plural!
-        tc.tool === 'add_task' ||
-        tc.tool === 'add_tasks' ||
-        (tc.tool.includes('create') && tc.tool.includes('task')) ||
-        (tc.tool.includes('add') && tc.tool.includes('task'))
-      );
-
-      if (createTaskCalls.length > 0) {
-        console.log('Task creation tools called:', createTaskCalls.length);
         for (const call of createTaskCalls) {
-          console.log('Task creation result:', JSON.stringify(call.result, null, 2));
-          if (call.result?.success && call.result?.task) {
-            const task = call.result.task;
-            await mem0Client.recordTask(
-              message.userId,
-              task.id,
-              task.content,
-              task.projectId
-            );
-            console.log(`Task created and recorded: ${task.content}`);
+          if (call.result?.success) {
+            console.log('Task created via MCP:', call.toolName);
+            // Note: Todoist MCP may not return full task details
+            // Consider using find-tasks to get created task info if needed
           }
         }
-      } else {
-        console.log('WARNING: No task creation tool was called!');
       }
-    } else {
-      console.log('WARNING: No tools were called at all!');
     }
 
-    console.log('Claude response:', result.text);
+    // Add assistant response to history
+    conversationManager.addMessage(message.userId, 'assistant', result.text);
+
+    console.log('Agent response:', result.text);
     return result.text;
   } catch (error) {
-    console.error('Error in handleTaskManagement:', error);
-    return "I'm sorry, I had trouble managing your tasks. Please try rephrasing your request.";
+    console.error('Error handling message:', error);
+
+    // Close MCP connections on error
+    await mcpManager.closeAll();
+
+    return "I'm sorry, I encountered an error processing your message. Please try again.";
+  } finally {
+    // Clean up MCP connections after processing
+    await mcpManager.closeAll();
   }
 }
 
-async function handleGeneralConversation(
-  message: ProcessedMessage,
-  context: any
-): Promise<string> {
-  try {
-    const result = await claudeClient.processMessage(
-      message.content,
-      context,
-      [],
-      'medium'
-    );
-
-    return result.text;
-  } catch (error) {
-    console.error('Error in handleGeneralConversation:', error);
-    return "I'm sorry, I encountered an error. Please try again.";
-  }
-}
