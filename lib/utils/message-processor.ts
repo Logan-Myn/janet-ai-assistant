@@ -1,11 +1,9 @@
-import { whatsappClient } from '@/lib/whatsapp/client';
 import { twilioWhatsAppClient } from '@/lib/whatsapp/twilio-client';
 import { transcribeAudio } from '@/lib/whisper/transcribe';
 import { agentManager } from '@/lib/claude/agent-manager';
 import { conversationManager } from '@/lib/utils/conversation-manager';
 import { mem0Client } from '@/lib/mem0/memory';
 import { mcpManager } from '@/lib/mcp/multi-client';
-import { config } from '@/config';
 import type { ProcessedMessage } from '@/types';
 
 export async function processIncomingMessage(
@@ -16,12 +14,6 @@ export async function processIncomingMessage(
     const userId = message.from;
     const userName = value.contacts?.[0]?.profile?.name || 'User';
     const messageId = message.id;
-    const provider = config.app.whatsappProvider;
-
-    // Mark as read (only for Meta)
-    if (provider === 'meta') {
-      await whatsappClient.markAsRead(messageId);
-    }
 
     let messageContent: string;
     let messageType: 'text' | 'voice';
@@ -33,21 +25,13 @@ export async function processIncomingMessage(
     } else if (message.type === 'audio') {
       console.log(`Received voice message from ${userName}, transcribing...`);
 
-      let audioBuffer: Buffer;
-      let mimeType: string;
+      // Twilio provides direct media URL in message.audio.id
+      const mediaUrl = message.audio.id;
+      const response = await fetch(mediaUrl);
+      const audioBuffer = Buffer.from(await response.arrayBuffer());
+      const mimeType = message.audio.mime_type || 'audio/ogg';
 
-      if (provider === 'twilio') {
-        // Twilio provides direct media URL in message.audio.id
-        const mediaUrl = message.audio.id;
-        const response = await fetch(mediaUrl);
-        audioBuffer = Buffer.from(await response.arrayBuffer());
-        mimeType = message.audio.mime_type || 'audio/ogg';
-      } else {
-        // Meta requires fetching media URL first
-        const mediaData = await whatsappClient.getMediaUrl(message.audio.id);
-        audioBuffer = await whatsappClient.downloadMedia(mediaData.url);
-        mimeType = mediaData.mime_type;
-      }
+      console.log(`Audio details - URL: ${mediaUrl}, MimeType: ${mimeType}`);
 
       messageContent = await transcribeAudio(audioBuffer, mimeType);
       messageType = 'voice';
@@ -69,26 +53,16 @@ export async function processIncomingMessage(
 
     const response = await handleMessage(processedMessage);
 
-    // Send response using the appropriate client
-    if (provider === 'twilio') {
-      await twilioWhatsAppClient.sendTextMessage(userId, response);
-    } else {
-      await whatsappClient.sendTextMessage(userId, response);
-    }
+    // Send response via Twilio
+    await twilioWhatsAppClient.sendTextMessage(userId, response);
 
     await mem0Client.recordConversation(userId, messageContent, response);
   } catch (error) {
     console.error('Error in processIncomingMessage:', error);
 
     try {
-      const provider = config.app.whatsappProvider;
       const errorMessage = "I'm sorry, I encountered an error processing your message. Please try again.";
-
-      if (provider === 'twilio') {
-        await twilioWhatsAppClient.sendTextMessage(message.from, errorMessage);
-      } else {
-        await whatsappClient.sendTextMessage(message.from, errorMessage);
-      }
+      await twilioWhatsAppClient.sendTextMessage(message.from, errorMessage);
     } catch (sendError) {
       console.error('Error sending error message:', sendError);
     }
