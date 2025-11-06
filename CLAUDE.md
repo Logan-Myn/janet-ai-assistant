@@ -122,3 +122,4 @@ ESLint is configured with Next.js core web vitals and TypeScript presets.
 - Designed for Vercel, Railway, or Fly.io
 - Webhook endpoints exposed for WhatsApp message delivery
 - Environment variables required for WhatsApp Business API, Todoist API, OpenAI API, Mem0
+- Do not deploy on vercel untill I said so

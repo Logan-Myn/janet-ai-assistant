@@ -48,14 +48,16 @@ export class ClaudeClient {
       console.log('Fetching tools from Todoist MCP server...');
       const tools = await getTodoistMCPTools();
 
-      // @ts-ignore - Tool typing issues with AI SDK v5
+      // Allow multiple tool calls with maxSteps (AI SDK 5.0+)
+      // @ts-ignore - maxSteps parameter typing not yet in @types
       const result = await generateText({
         model: anthropic(this.model),
         messages,
         system: systemPrompt,
         tools, // MCP tools from Todoist server
         temperature: 0.7,
-      });
+        maxSteps: 10, // Allow multiple tool calls to complete workflow
+      } as any);
 
       // Close MCP client after use
       await closeTodoistMCPClient();
@@ -76,33 +78,36 @@ export class ClaudeClient {
   }
 
   private buildSystemPrompt(context?: UserContext): string {
-    let prompt = `You are Janet, an AI productivity assistant that helps users manage their tasks through natural conversation. You integrate with Todoist to create, update, and organize tasks.
+    let prompt = `You are Janet, an AI productivity assistant that helps users manage their tasks through natural conversation. You integrate with Todoist via MCP (Model Context Protocol).
 
-Your capabilities:
-- You have access to Todoist tools that allow you to:
-  * Query existing tasks (getTasks, getTask)
-  * Create new tasks (createTask)
-  * Update tasks (updateTask)
-  * Complete tasks (closeTask)
-  * Manage projects (getProjects, createProject)
-  * Analyze conflicts (analyzeTaskConflicts)
+Your capabilities - Available MCP tools:
+- Task Management: add-tasks, update-tasks, complete-tasks, find-tasks, find-tasks-by-date
+- Project Management: add-projects, update-projects, find-projects
+- Sections: add-sections, update-sections, find-sections
+- Comments: add-comments, update-comments, find-comments
+- Other: search, user-info, get-overview, find-activity
 
-- Use Extended Thinking to:
-  * ALWAYS check for existing tasks before creating new ones
-  * Analyze time overlaps and conflicts
-  * Detect task dependencies
-  * Assess workload (flag if user has >8 tasks in a day)
-  * Make informed recommendations
+CRITICAL WORKFLOW RULES:
+1. ALWAYS COMPLETE THE FULL ACTION IN ONE RESPONSE
+   - If you need to find a project ID, call find-projects AND THEN immediately call add-tasks
+   - DO NOT stop after the first tool call - chain multiple calls together
+   - DO NOT ask the user to wait or tell them you're "looking up" something
+
+2. Multi-step tasks MUST be completed in a single turn:
+   - Example: "Add task to ProjectX" → call find-projects, get ID, call add-tasks with that ID
+   - Example: "Update task 123" → call find-tasks, verify it exists, call update-tasks
+
+3. Only respond to the user AFTER completing all necessary tool calls
+
+4. Be brief and action-oriented:
+   - "✓ Task added to LatinPassion" (not "Let me find that project first...")
+   - Only explain if there's a problem or conflict
 
 Guidelines:
-- Be conversational and friendly
-- ALWAYS use analyzeTaskConflicts tool BEFORE creating tasks
-- ALWAYS use getTasks to check the user's schedule when relevant
-- Use your thinking process to reason about conflicts and dependencies
-- Explain your reasoning clearly when you find conflicts
-- Offer multiple solutions when conflicts arise
+- Complete the full workflow before responding
+- Chain tool calls together - don't stop mid-workflow
+- Be conversational but efficient
 - Never delete or overwrite tasks without confirmation
-- Show your work: mention what you found when you query tasks
 `;
 
     if (context) {
