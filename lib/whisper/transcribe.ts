@@ -22,9 +22,18 @@ export async function transcribeAudio(
     const fileExtension = getFileExtension(mimeType);
     const fileName = `audio.${fileExtension}`;
 
+    // Determine the mime type to use for the File object
+    // For OGG/Opus from Twilio, use 'audio/ogg' but with .oga extension
+    let fileMimeType = mimeType;
+    if (fileExtension === 'oga') {
+      fileMimeType = 'audio/ogg';
+    }
+
+    console.log(`Creating audio file - Name: ${fileName}, MimeType: ${fileMimeType}, Size: ${audioBuffer.length} bytes`);
+
     const uint8Array = new Uint8Array(audioBuffer);
-    const blob = new Blob([uint8Array], { type: mimeType });
-    const file = new File([blob], fileName, { type: mimeType });
+    const blob = new Blob([uint8Array], { type: fileMimeType });
+    const file = new File([blob], fileName, { type: fileMimeType });
 
     const transcription = await openai.audio.transcriptions.create({
       file: file,
@@ -46,8 +55,8 @@ function getFileExtension(mimeType: string): string {
   const baseMimeType = mimeType.split(';')[0].trim();
 
   const mimeToExt: Record<string, string> = {
-    'audio/ogg': 'ogg',
-    'audio/opus': 'ogg', // Opus codec should use .ogg extension for Whisper
+    'audio/ogg': 'oga', // Use .oga for OGG audio (Opus codec)
+    'audio/opus': 'oga', // Opus codec should use .oga extension for Whisper
     'audio/mp3': 'mp3',
     'audio/mpeg': 'mp3',
     'audio/mp4': 'm4a',
@@ -58,7 +67,7 @@ function getFileExtension(mimeType: string): string {
     'audio/x-m4a': 'm4a',
   };
 
-  return mimeToExt[baseMimeType] || 'ogg';
+  return mimeToExt[baseMimeType] || 'oga';
 }
 
 export async function transcribeFromUrl(
